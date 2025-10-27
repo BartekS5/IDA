@@ -1,0 +1,21 @@
+{
+  "version": 1.1,
+  "global_settings": {
+    "on_sql_null": "omit_field",
+    "on_mongo_missing": "set_to_sql_null"
+  },
+  "migration_tasks": [
+    {
+      "name": "Users-Migration",
+      "sql_entity": {
+        "table_name": "dbo.Users",
+        "primary_key": "UserID"
+      },
+      "mongo_entity": {
+        "collection_name": "users",
+        "upsert_key": "user_id"
+      },
+      "field_mappings": []
+    }
+  ]
+}
