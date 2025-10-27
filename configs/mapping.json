@@ -15,7 +15,28 @@
         "collection_name": "users",
         "upsert_key": "user_id"
       },
-      "field_mappings": []
+      "field_mappings": [
+        {
+          "sql_column": "UserID",
+          "mongo_field": "user_id",
+          "type_mapping": "int_to_int"
+        },
+        {
+          "sql_column": "Username",
+          "mongo_field": "username",
+          "type_mapping": "string_to_string"
+        },
+        {
+          "sql_column": "Email",
+          "mongo_field": "email",
+          "type_mapping": "string_to_string"
+        },
+        {
+          "sql_column": "CreatedAt",
+          "mongo_field": "created_at",
+          "type_mapping": "datetime_to_isodate"
+        }
+      ]
     }
   ]
 }

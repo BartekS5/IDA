@@ -3,6 +3,8 @@
 // and can be imported by other projects that need to interact with this tool.
 package models
 
+import "encoding/json"
+
 // MappingConfig is the top-level structure for the mapping.json file.
 // It matches the root of your JSON design.
 type MappingConfig struct {
@@ -13,8 +15,8 @@ type MappingConfig struct {
 
 // GlobalSettings defines default behaviors for the migration.
 type GlobalSettings struct {
-	OnSQLNull      string `json:"on_sql_null"`
-	OnMongoMissing string `json:"on_mongo_missing"`
+	OnSQLNull      string `json:"on_sql_null"`      // "omit_field", "set_null", "use_default"
+	OnMongoMissing string `json:"on_mongo_missing"` // "set_to_sql_null", "skip_field", "use_default"
 }
 
 // MigrationTask defines a single, complete migration from one
@@ -41,8 +43,8 @@ type MongoEntity struct {
 // FieldMapping defines a single column-to-field mapping,
 // including type conversion rules.
 type FieldMapping struct {
-	SQLColumn         string `json:"sql_column"`
-	MongoField        string `json:"mongo_field"`
-	TypeMapping       string `json:"type_mapping"`
-	SQLNotNullDefault any    `json:"sql_not_null_default,omitempty"`
+	SQLColumn         string          `json:"sql_column"`
+	MongoField        string          `json:"mongo_field"`
+	TypeMapping       string          `json:"type_mapping"`
+	SQLNotNullDefault json.RawMessage `json:"sql_not_null_default,omitempty"`
 }

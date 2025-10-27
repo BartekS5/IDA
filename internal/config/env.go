@@ -1,5 +1,5 @@
 // Package config handles loading and parsing of configuration files
-// for the application, such as the main mapping.json file.
+// for the application.
 package config
 
 import (
@@ -7,8 +7,7 @@ import (
 	"os"
 )
 
-// Config holds all configuration for the application,
-// typically loaded from environment variables.
+// Config holds database connection configuration loaded from environment variables.
 type Config struct {
 	SQLConnString   string
 	MongoConnString string
