@@ -13,7 +13,7 @@ bashcp .env.example .env
 ### Build the project
 
 ```bash
-go build -o bin/your-app ./cmd/main
+go build -o ida ./cmd/main
 ```
 
 ### Run the application
