@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/BartekS5/IDA/internal/config"
+	"github.com/BartekS5/IDA/pkg/database"
 	"github.com/BartekS5/IDA/pkg/models"
 )
 
@@ -39,10 +42,31 @@ func runMigrate(opts *MigrateOptions) error {
 	// Display task information
 	printTaskInfo(task)
 
-	// TODO: Pass task and dbConf to the ETL engine
+	// --- Connect to Databases ---
+	log.Printf("Connecting to MS SQL: %s", maskConnectionString(dbConf.SQLConnString))
+	sqlDB, err := database.ConnectSQL(dbConf.SQLConnString)
+	if err != nil {
+		return fmt.Errorf("failed to connect to SQL database: %w", err)
+	}
+	defer sqlDB.Close() // Ensure connection is closed when function returns
+
+	log.Printf("Connecting to MongoDB: %s", maskConnectionString(dbConf.MongoConnString))
+	mongoClient, err := database.ConnectMongo(dbConf.MongoConnString)
+	if err != nil {
+		return fmt.Errorf("failed to connect to MongoDB: %w", err)
+	}
+	// Ensure client is disconnected when function returns
+	defer func() {
+		log.Println("Disconnecting from MongoDB...")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err = mongoClient.Disconnect(ctx); err != nil {
+			log.Printf("Warning: error disconnecting from MongoDB: %v", err)
+		}
+	}()
+
+	// TODO: Pass connections (sqlDB, mongoClient) and task to the ETL engine
 	log.Println("Ready to execute migration (ETL engine not yet implemented)")
-	log.Printf("SQL Connection: %s", maskConnectionString(dbConf.SQLConnString))
-	log.Printf("MongoDB Connection: %s", maskConnectionString(dbConf.MongoConnString))
 
 	return nil
 }
