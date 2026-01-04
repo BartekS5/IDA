@@ -1,0 +1,45 @@
+{
+  "entity": "AppUser",
+  "sqlTable": "users",
+  "mongoCollection": "users",
+  "idStrategy": {
+    "sqlField": "id",
+    "mongoField": "_id",
+    "type": "long"
+  },
+  "fields": {
+    "authRef":      { "sql": "auth_ref", "mongo": "authRef", "type": "string" },
+    "userName":     { "sql": "user_name", "mongo": "username", "type": "string" },
+    "password":     { "sql": "password", "mongo": "password", "type": "string" },
+    "email":        { "sql": "email", "mongo": "email", "type": "string" },
+    "name":         { "sql": "name", "mongo": "name", "type": "string" },
+    "registeredAt": { "sql": "registered_at", "mongo": "registeredAt", "type": "datetime", "format": "ISO8601" },
+    "points":       { "sql": "points", "mongo": "points", "type": "int" },
+    "status":       { "sql": "status", "mongo": "status", "type": "enum" }
+  },
+  "relations": {
+    "roles": {
+      "type": "many-to-many",
+      "sqlJoinTable": "users_roles",
+      "sqlForeignKey": "user_id",
+      "mongoField": "roles",
+      "embedding": "inline",
+      "fields": ["name"]
+    },
+    "pointsActions": {
+      "type": "one-to-many",
+      "sqlTable": "points_action",
+      "sqlForeignKey": "user_id",
+      "mongoField": "pointsActions",
+      "embedding": "embedded"
+    },
+    "restaurants": {
+      "type": "one-to-many",
+      "sqlTable": "restaurant",
+      "sqlForeignKey": "owner_id",
+      "mongoField": "restaurants",
+      "embedding": "reference",
+      "referenceKey": "restaurantId"
+    }
+  }
+}

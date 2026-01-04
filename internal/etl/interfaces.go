@@ -1,24 +1,11 @@
 package etl
 
-// Extractor reads data in batches from a source.
-// ReadBatch fetches the next batch of data. `batchSize` is the desired
-// number of records. `checkpoint` is the value (e.g., last processed ID)
-// from which to resume reading.
-// It returns a slice of data records (as interface{} for now) and an error.
+// Extractor reads data. Returns a slice of maps (generic representation), the next offset, and error.
 type Extractor interface {
-	ReadBatch(batchSize int, checkpoint string) ([]interface{}, error)
+	Extract(batchSize int, offset interface{}) ([]map[string]interface{}, interface{}, error)
 }
 
-// Transformer converts data based on the mapping rules.
-// Transform takes a batch of raw data from the Extractor and returns
-// a batch of data ready for the Loader.
-type Transformer interface {
-	Transform(batch []interface{}) ([]interface{}, error)
-}
-
-// Loader writes data in batches to a target.
-// LoadBatch takes a batch of transformed data and writes it to the
-// destination datastore.
+// Loader writes data.
 type Loader interface {
-	LoadBatch(batch []interface{}) error
+	Load(data []map[string]interface{}) error
 }
