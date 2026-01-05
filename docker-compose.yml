@@ -1,6 +1,7 @@
 services:
   mssql:
     image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64  # <--- ADD THIS LINE
     container_name: go-project-mssql
     environment:
       SA_PASSWORD: "YourPassword123!"

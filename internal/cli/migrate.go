@@ -4,36 +4,38 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// MigrateOptions holds the flags for the migrate command
 type MigrateOptions struct {
 	MappingFile string
-	TaskName    string
+	BatchSize   int
 }
 
-// NewMigrateCmd creates and configures the "migrate" sub-command.
 func NewMigrateCmd() *cobra.Command {
 	opts := &MigrateOptions{}
 
 	cmd := &cobra.Command{
 		Use:   "migrate",
-		Short: "Run an ETL migration task",
-		Long: `Execute a migration task defined in the mapping configuration file.
-The task will migrate data between SQL and MongoDB based on the field mappings.`,
-		Example: `  ida migrate -f configs/mapping.json -t Users-Migration
-  ida migrate --mapping-file configs/mapping.json --task-name Orders-Migration`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// Delegate to the handler
-			return runMigrate(opts)
+		Short: "ETL operations",
+	}
+
+	cmd.PersistentFlags().StringVarP(&opts.MappingFile, "mapping", "m", "configs/mapping.json", "Path to mapping file")
+	cmd.PersistentFlags().IntVarP(&opts.BatchSize, "batch-size", "b", 100, "Batch size")
+
+	sqlToMongo := &cobra.Command{
+		Use:   "sql-to-mongo",
+		Short: "Run migration from SQL to MongoDB",
+		RunE: func(c *cobra.Command, args []string) error {
+			return runMigration(opts, "sql-to-mongo")
 		},
 	}
 
-	// Define flags
-	cmd.Flags().StringVarP(&opts.MappingFile, "mapping-file", "f", "", "Path to the mapping.json file (required)")
-	cmd.Flags().StringVarP(&opts.TaskName, "task-name", "t", "", "The specific migration task name to run (required)")
+	mongoToSql := &cobra.Command{
+		Use:   "mongo-to-sql",
+		Short: "Run migration from MongoDB to SQL",
+		RunE: func(c *cobra.Command, args []string) error {
+			return runMigration(opts, "mongo-to-sql")
+		},
+	}
 
-	// Mark flags as required
-	cmd.MarkFlagRequired("mapping-file")
-	cmd.MarkFlagRequired("task-name")
-
+	cmd.AddCommand(sqlToMongo, mongoToSql)
 	return cmd
 }

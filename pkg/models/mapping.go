@@ -1,50 +1,45 @@
-// Package models defines the public-facing data structures for the application.
-// These structs are used to parse the mapping.json configuration file
-// and can be imported by other projects that need to interact with this tool.
 package models
 
 import "encoding/json"
 
-// MappingConfig is the top-level structure for the mapping.json file.
-// It matches the root of your JSON design.
-type MappingConfig struct {
-	Version        float64         `json:"version"`
-	GlobalSettings GlobalSettings  `json:"global_settings"`
-	MigrationTasks []MigrationTask `json:"migration_tasks"`
+// MappingSchema represents the root of the JSON mapping file.
+type MappingSchema struct {
+	Entity          string                     `json:"entity"`
+	SQLTable        string                     `json:"sqlTable"`
+	MongoCollection string                     `json:"mongoCollection"`
+	IDStrategy      IDStrategy                 `json:"idStrategy"`
+	Fields          map[string]FieldConfig     `json:"fields"`
+	Relations       map[string]RelationConfig  `json:"relations"`
 }
 
-// GlobalSettings defines default behaviors for the migration.
-type GlobalSettings struct {
-	OnSQLNull      string `json:"on_sql_null"`      // "omit_field", "set_null", "use_default"
-	OnMongoMissing string `json:"on_mongo_missing"` // "set_to_sql_null", "skip_field", "use_default"
+type IDStrategy struct {
+	SQLField   string `json:"sqlField"`
+	MongoField string `json:"mongoField"`
+	Type       string `json:"type"`
 }
 
-// MigrationTask defines a single, complete migration from one
-// table to one collection (or vice-versa).
-type MigrationTask struct {
-	Name          string         `json:"name"`
-	SQLEntity     SQLEntity      `json:"sql_entity"`
-	MongoEntity   MongoEntity    `json:"mongo_entity"`
-	FieldMappings []FieldMapping `json:"field_mappings"`
+type FieldConfig struct {
+	SQLColumn  string `json:"sql"`
+	MongoField string `json:"mongo"`
+	Type       string `json:"type"`
+	Format     string `json:"format,omitempty"`
 }
 
-// SQLEntity defines the source SQL table details.
-type SQLEntity struct {
-	TableName  string `json:"table_name"`
-	PrimaryKey string `json:"primary_key"`
+type RelationConfig struct {
+	Type          string   `json:"type"`
+	SQLTable      string   `json:"sqlTable,omitempty"`
+	SQLJoinTable  string   `json:"sqlJoinTable,omitempty"` // Fixed: Added 'string' type
+	SQLForeignKey string   `json:"sqlForeignKey"`
+	MongoField    string   `json:"mongoField"`
+	Embedding     string   `json:"embedding"`
+	Fields        []string `json:"fields,omitempty"`
+	ReferenceKey  string   `json:"referenceKey,omitempty"`
 }
 
-// MongoEntity defines the target Mongo collection details.
-type MongoEntity struct {
-	CollectionName string `json:"collection_name"`
-	UpsertKey      string `json:"upsert_key"`
-}
-
-// FieldMapping defines a single column-to-field mapping,
-// including type conversion rules.
-type FieldMapping struct {
-	SQLColumn         string          `json:"sql_column"`
-	MongoField        string          `json:"mongo_field"`
-	TypeMapping       string          `json:"type_mapping"`
-	SQLNotNullDefault json.RawMessage `json:"sql_not_null_default,omitempty"`
+func LoadMapping(data []byte) (*MappingSchema, error) {
+	var m MappingSchema
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
 }
