@@ -4,31 +4,42 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
-	"time"
 
+	"github.com/BartekS5/IDA/pkg/logger"
 	"github.com/BartekS5/IDA/pkg/models"
+	"github.com/BartekS5/IDA/pkg/utils" // Imported utils
 )
 
-// SQLToMongoExtractor reads from SQL and builds hierarchical structures.
 type SQLToMongoExtractor struct {
 	DB     *sql.DB
 	Config *models.MappingSchema
 }
 
 func (s *SQLToMongoExtractor) Extract(batchSize int, offset interface{}) ([]map[string]interface{}, interface{}, error) {
-	// 1. Fetch main entities
-	query := fmt.Sprintf("SELECT * FROM %s ORDER BY %s OFFSET %v ROWS FETCH NEXT %d ROWS ONLY",
-		s.Config.SQLTable, s.Config.IDStrategy.SQLField, getIntOffset(offset), batchSize)
+	// Use shared utility function
+	currentOffset := utils.GetIntOffset(offset)
+	
+	// Ensure safe ordering
+	orderBy := s.Config.IDStrategy.SQLField
+	if orderBy == "" {
+		orderBy = "(SELECT NULL)" 
+	}
+
+	query := fmt.Sprintf("SELECT * FROM %s ORDER BY %s OFFSET %d ROWS FETCH NEXT %d ROWS ONLY", 
+		s.Config.SQLTable, orderBy, currentOffset, batchSize)
 	
 	rows, err := s.DB.Query(query)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("SQL query failed: %w", err)
 	}
 	defer rows.Close()
 
-	cols, _ := rows.Columns()
-	var results []map[string]interface{}
-	var ids []interface{}
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var result []map[string]interface{}
 
 	for rows.Next() {
 		columns := make([]interface{}, len(cols))
@@ -36,6 +47,7 @@ func (s *SQLToMongoExtractor) Extract(batchSize int, offset interface{}) ([]map[
 		for i := range columns {
 			columnPointers[i] = &columns[i]
 		}
+
 		if err := rows.Scan(columnPointers...); err != nil {
 			return nil, nil, err
 		}
@@ -43,221 +55,221 @@ func (s *SQLToMongoExtractor) Extract(batchSize int, offset interface{}) ([]map[
 		m := make(map[string]interface{})
 		for i, colName := range cols {
 			val := columns[i]
-			b, ok := val.([]byte)
-			if ok {
+			if b, ok := val.([]byte); ok {
 				m[colName] = string(b)
 			} else {
 				m[colName] = val
 			}
 		}
-		results = append(results, m)
 		
-		idVal := m[s.Config.IDStrategy.SQLField]
-		ids = append(ids, idVal)
+		s.enrichWithRelations(m)
+		result = append(result, m)
 	}
 
-	if len(results) == 0 {
-		return results, offset, nil
-	}
-
-	// 2. Fetch Relations
-	if err := s.enrichRelations(results, ids); err != nil {
-		return nil, nil, err
-	}
-
-	// 3. Transform
-	transformed := s.transformToMongoSchema(results)
-
-	nextOffset := getIntOffset(offset) + len(results)
-	return transformed, nextOffset, nil
+	return result, currentOffset + len(result), nil
 }
 
-func (s *SQLToMongoExtractor) enrichRelations(users []map[string]interface{}, ids []interface{}) error {
-	if len(ids) == 0 { return nil }
-	inClause := strings.Trim(strings.Join(strings.Fields(fmt.Sprint(ids)), ","), "[]")
-
-	for key, rel := range s.Config.Relations {
-		var relRows *sql.Rows
-		var err error
-		var query string
-
-		if rel.Type == "many-to-many" {
-			cols := strings.Join(rel.Fields, ", ")
-			query = fmt.Sprintf("SELECT ur.%s as parent_id, r.%s FROM %s ur JOIN roles r ON ur.role_id = r.id WHERE ur.%s IN (%s)",
-				rel.SQLForeignKey, cols, rel.SQLJoinTable, rel.SQLForeignKey, inClause)
-		} else {
-			query = fmt.Sprintf("SELECT %s as parent_id, * FROM %s WHERE %s IN (%s)",
-				rel.SQLForeignKey, rel.SQLTable, rel.SQLForeignKey, inClause)
-		}
-
-		relRows, err = s.DB.Query(query)
-		if err != nil {
-			return fmt.Errorf("failed to fetch relation %s: %w", key, err)
-		}
-		defer relRows.Close()
-
-		relMap := make(map[string][]map[string]interface{})
-		relCols, _ := relRows.Columns()
-		for relRows.Next() {
-			vals := make([]interface{}, len(relCols))
-			ptrs := make([]interface{}, len(relCols))
-			for i := range vals { ptrs[i] = &vals[i] }
-			relRows.Scan(ptrs...)
-			
-			rowMap := make(map[string]interface{})
-			var parentID string
-			for i, col := range relCols {
-				val := vals[i]
-				b, ok := val.([]byte)
-				v := val
-				if ok { v = string(b) }
-				
-				if col == "parent_id" {
-					parentID = fmt.Sprintf("%v", v)
-				} else {
-					rowMap[col] = v
-				}
-			}
-			relMap[parentID] = append(relMap[parentID], rowMap)
-		}
-
-		for _, user := range users {
-			uid := fmt.Sprintf("%v", user[s.Config.IDStrategy.SQLField])
-			if childData, found := relMap[uid]; found {
-				user[key] = childData
-			} else {
-				user[key] = []map[string]interface{}{}
-			}
-		}
+func (s *SQLToMongoExtractor) enrichWithRelations(row map[string]interface{}) {
+	idVal, ok := row[s.Config.IDStrategy.SQLField]
+	if !ok {
+		return
 	}
-	return nil
-}
 
-func (s *SQLToMongoExtractor) transformToMongoSchema(raw []map[string]interface{}) []map[string]interface{} {
-	var out []map[string]interface{}
-	for _, r := range raw {
-		doc := make(map[string]interface{})
-		doc[s.Config.IDStrategy.MongoField] = r[s.Config.IDStrategy.SQLField]
-
-		for _, f := range s.Config.Fields {
-			if val, ok := r[f.SQLColumn]; ok {
-				if f.Type == "datetime" && f.Format == "ISO8601" {
-					if tStr, ok := val.(string); ok {
-						val, _ = time.Parse(time.RFC3339, tStr)
+	for relName, relCfg := range s.Config.Relations {
+		if relCfg.Type == "one-to-many" && relCfg.SQLTable != "" {
+			q := fmt.Sprintf("SELECT * FROM %s WHERE %s = @p1", relCfg.SQLTable, relCfg.SQLForeignKey)
+			rows, err := s.DB.Query(q, idVal)
+			if err == nil {
+				cols, _ := rows.Columns()
+				var children []map[string]interface{}
+				for rows.Next() {
+					vals := make([]interface{}, len(cols))
+					ptrs := make([]interface{}, len(cols))
+					for i := range vals { ptrs[i] = &vals[i] }
+					rows.Scan(ptrs...)
+					child := make(map[string]interface{})
+					for i, c := range cols { 
+						if b, ok := vals[i].([]byte); ok { child[c] = string(b) } else { child[c] = vals[i] }
 					}
+					children = append(children, child)
 				}
-				doc[f.MongoField] = val
+				rows.Close()
+				row[relName] = children
 			}
 		}
-
-		for key, rel := range s.Config.Relations {
-			if val, ok := r[key]; ok {
-				doc[rel.MongoField] = val
-			}
-		}
-		out = append(out, doc)
 	}
-	return out
 }
 
-// SQLLoader inserts/updates data into SQL.
 type SQLLoader struct {
-	DB     *sql.DB
-	Config *models.MappingSchema
+	DB          *sql.DB
+	Config      *models.MappingSchema
+	Transformer *Transformer
+}
+
+func NewSQLLoader(db *sql.DB, config *models.MappingSchema) *SQLLoader {
+	return &SQLLoader{
+		DB:          db,
+		Config:      config,
+		Transformer: NewTransformer(config),
+	}
 }
 
 func (l *SQLLoader) Load(data []map[string]interface{}) error {
-	fmt.Printf("SQL Loader: Processing %d records...\n", len(data))
+	logger.Infof("SQL Loader: Processing %d records...", len(data))
+
+	tx, err := l.DB.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	hasIdentity, err := l.hasIdentityColumn(tx, l.Config.SQLTable)
+	if err != nil {
+		logger.Warnf("Failed to check identity column: %v", err)
+	}
 
 	for _, doc := range data {
-		// 1. Identify PK
-		// The Config.IDStrategy.MongoField (e.g., "_id") holds the value for Config.IDStrategy.SQLField (e.g., "id")
-		idVal, ok := doc[l.Config.IDStrategy.MongoField]
-		if !ok {
-			fmt.Println("Warning: Skipping document missing ID")
+		sqlRow, err := l.Transformer.TransformMongoToSQL(doc)
+		if err != nil {
+			logger.Errorf("Transform error: %v", err)
 			continue
 		}
 
-		// 2. Map fields back to SQL columns
-		colValues := make(map[string]interface{})
-		for _, f := range l.Config.Fields {
-			if val, exists := doc[f.MongoField]; exists {
-				// Simple type handling (dates need formatting in real apps)
-				colValues[f.SQLColumn] = val
+		idVal := sqlRow[l.Config.IDStrategy.SQLField]
+		if idVal == nil {
+			continue
+		}
+
+		if err := l.upsertRow(tx, l.Config.SQLTable, l.Config.IDStrategy.SQLField, idVal, sqlRow, hasIdentity); err != nil {
+			logger.Errorf("Failed to upsert main entity %v: %v", idVal, err)
+			continue
+		}
+
+		relations := l.Transformer.ExtractRelationData(doc, idVal)
+		for relName, rows := range relations {
+			relCfg := l.Config.Relations[relName]
+			if relCfg.Type == "many-to-many" {
+				if err := l.syncJoinTable(tx, relCfg, idVal, rows); err != nil {
+					logger.Errorf("Failed to sync M2M relation %s: %v", relName, err)
+				}
+			} else {
+				if err := l.replaceChildren(tx, relCfg, idVal, rows); err != nil {
+					logger.Errorf("Failed to replace children for %s: %v", relName, err)
+				}
+			}
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (l *SQLLoader) hasIdentityColumn(tx *sql.Tx, table string) (bool, error) {
+	var exists int
+	query := "SELECT 1 FROM sys.identity_columns WHERE object_id = OBJECT_ID(@p1)"
+	err := tx.QueryRow(query, table).Scan(&exists)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (l *SQLLoader) upsertRow(tx *sql.Tx, table string, idCol string, idVal interface{}, cols map[string]interface{}, hasIdentity bool) error {
+	var exists int
+	query := fmt.Sprintf("SELECT 1 FROM %s WHERE %s = @p1", table, idCol)
+	err := tx.QueryRow(query, idVal).Scan(&exists)
+
+	if err == sql.ErrNoRows {
+		var colNames, params []string
+		var args []interface{}
+		i := 1
+		for k, v := range cols {
+			colNames = append(colNames, k)
+			params = append(params, fmt.Sprintf("@p%d", i))
+			args = append(args, v)
+			i++
+		}
+		
+		insQ := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(colNames, ","), strings.Join(params, ","))
+		
+		if hasIdentity {
+			if _, ok := cols[idCol]; ok {
+				_, err = tx.Exec(fmt.Sprintf("SET IDENTITY_INSERT %s ON", table))
+				if err != nil { return fmt.Errorf("failed to set identity_insert on: %w", err) }
+				
+				_, err = tx.Exec(insQ, args...)
+				
+				_, _ = tx.Exec(fmt.Sprintf("SET IDENTITY_INSERT %s OFF", table))
+				
+				return err
 			}
 		}
 
-		// 3. Check if Row Exists
-		var exists int
-		checkQuery := fmt.Sprintf("SELECT 1 FROM %s WHERE %s = @p1", l.Config.SQLTable, l.Config.IDStrategy.SQLField)
-		err := l.DB.QueryRow(checkQuery, idVal).Scan(&exists)
+		_, err = tx.Exec(insQ, args...)
+		return err
+	} else if err != nil {
+		return err
+	}
 
-		if err == sql.ErrNoRows {
-			// INSERT
-			l.insertRow(colValues, idVal)
-		} else if err == nil {
-			// UPDATE
-			l.updateRow(colValues, idVal)
-		} else {
-			return fmt.Errorf("error checking row existence: %w", err)
+	var sets []string
+	var args []interface{}
+	i := 1
+	for k, v := range cols {
+		if k == idCol { continue }
+		sets = append(sets, fmt.Sprintf("%s = @p%d", k, i))
+		args = append(args, v)
+		i++
+	}
+	args = append(args, idVal)
+	updQ := fmt.Sprintf("UPDATE %s SET %s WHERE %s = @p%d", table, strings.Join(sets, ","), idCol, i)
+	_, err = tx.Exec(updQ, args...)
+	return err
+}
+
+func (l *SQLLoader) replaceChildren(tx *sql.Tx, config models.RelationConfig, parentID interface{}, rows []map[string]interface{}) error {
+	delQ := fmt.Sprintf("DELETE FROM %s WHERE %s = @p1", config.SQLTable, config.SQLForeignKey)
+	if _, err := tx.Exec(delQ, parentID); err != nil {
+		return err
+	}
+
+	for _, row := range rows {
+		row[config.SQLForeignKey] = parentID
+		var colNames, params []string
+		var args []interface{}
+		i := 1
+		for k, v := range row {
+			colNames = append(colNames, k)
+			params = append(params, fmt.Sprintf("@p%d", i))
+			args = append(args, v)
+			i++
+		}
+		insQ := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", config.SQLTable, strings.Join(colNames, ","), strings.Join(params, ","))
+		if _, err := tx.Exec(insQ, args...); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-func (l *SQLLoader) insertRow(cols map[string]interface{}, idVal interface{}) {
-	var colNames []string
-	var placeholders []string
-	var args []interface{}
-
-	// Add Identity Insert logic if needed, but usually we let DB handle ID or force it if Identity Insert is ON.
-	// For simplicity, we assume we insert other fields and let DB generate ID or update existing.
-	// NOTE: If we want to restore the EXACT ID from Mongo, we need IDENTITY_INSERT ON.
-	// Here we try to update existing rows mainly.
-	
-	// Add PK to cols if we want to force it (requires SET IDENTITY_INSERT ON in MSSQL)
-	// For this demo, let's focus on updating the existing 'john_doe'.
-	
-	for col, val := range cols {
-		colNames = append(colNames, col)
-		placeholders = append(placeholders, fmt.Sprintf("@p%d", len(args)+1))
-		args = append(args, val)
+func (l *SQLLoader) syncJoinTable(tx *sql.Tx, config models.RelationConfig, parentID interface{}, rows []map[string]interface{}) error {
+	delQ := fmt.Sprintf("DELETE FROM %s WHERE %s = @p1", config.SQLJoinTable, config.SQLForeignKey)
+	if _, err := tx.Exec(delQ, parentID); err != nil {
+		return err
 	}
 
-	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", 
-		l.Config.SQLTable, strings.Join(colNames, ", "), strings.Join(placeholders, ", "))
-
-	if _, err := l.DB.Exec(query, args...); err != nil {
-		fmt.Printf("Error inserting: %v\n", err)
+	for _, row := range rows {
+		var childID interface{}
+		if val, ok := row["id"]; ok { childID = val } else 
+		if val, ok := row["_id"]; ok { childID = val }
+		
+		if childID != nil {
+			otherCol := "role_id" 
+			insQ := fmt.Sprintf("INSERT INTO %s (%s, %s) VALUES (@p1, @p2)", 
+				config.SQLJoinTable, config.SQLForeignKey, otherCol)
+			
+			if _, err := tx.Exec(insQ, parentID, childID); err != nil {
+				return err
+			}
+		}
 	}
-}
-
-func (l *SQLLoader) updateRow(cols map[string]interface{}, idVal interface{}) {
-	var setClauses []string
-	var args []interface{}
-
-	for col, val := range cols {
-		setClauses = append(setClauses, fmt.Sprintf("%s = @p%d", col, len(args)+1))
-		args = append(args, val)
-	}
-
-	// Add ID as the last argument for WHERE clause
-	args = append(args, idVal)
-	query := fmt.Sprintf("UPDATE %s SET %s WHERE %s = @p%d",
-		l.Config.SQLTable, strings.Join(setClauses, ", "), l.Config.IDStrategy.SQLField, len(args))
-
-	if _, err := l.DB.Exec(query, args...); err != nil {
-		fmt.Printf("Error updating: %v\n", err)
-	} else {
-		fmt.Printf("Updated record ID: %v\n", idVal)
-	}
-}
-
-func getIntOffset(o interface{}) int {
-	if o == nil { return 0 }
-	switch v := o.(type) {
-	case int: return v
-	case float64: return int(v)
-	default: return 0
-	}
+	return nil
 }
