@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/BartekS5/IDA/pkg/models"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // SQLToMongoExtractor reads from SQL and builds hierarchical structures.
@@ -176,19 +177,21 @@ func (l *SQLLoader) Load(data []map[string]interface{}) error {
 	fmt.Printf("SQL Loader: Processing %d records...\n", len(data))
 
 	for _, doc := range data {
-		// 1. Identify PK
-		// The Config.IDStrategy.MongoField (e.g., "_id") holds the value for Config.IDStrategy.SQLField (e.g., "id")
 		idVal, ok := doc[l.Config.IDStrategy.MongoField]
 		if !ok {
 			fmt.Println("Warning: Skipping document missing ID")
 			continue
 		}
 
-		// 2. Map fields back to SQL columns
 		colValues := make(map[string]interface{})
 		for _, f := range l.Config.Fields {
 			if val, exists := doc[f.MongoField]; exists {
-				// Simple type handling (dates need formatting in real apps)
+				// FIX: Convert Mongo Date (primitive.DateTime) to Go Time
+				if f.Type == "datetime" {
+					if t, ok := val.(primitive.DateTime); ok {
+						val = t.Time()
+					}
+				}
 				colValues[f.SQLColumn] = val
 			}
 		}
@@ -199,41 +202,66 @@ func (l *SQLLoader) Load(data []map[string]interface{}) error {
 		err := l.DB.QueryRow(checkQuery, idVal).Scan(&exists)
 
 		if err == sql.ErrNoRows {
-			// INSERT
 			l.insertRow(colValues, idVal)
-		} else if err == nil {
-			// UPDATE
-			l.updateRow(colValues, idVal)
 		} else {
-			return fmt.Errorf("error checking row existence: %w", err)
+			l.updateRow(colValues, idVal)
+		}
+
+		if err := l.syncRelations(doc, idVal); err != nil {
+			fmt.Printf("Error syncing relations for ID %v: %v\n", idVal, err)
 		}
 	}
 	return nil
 }
 
 func (l *SQLLoader) insertRow(cols map[string]interface{}, idVal interface{}) {
+	// 1. Start a Transaction (Ensures ON/INSERT/OFF happen on the same connection)
+	tx, err := l.DB.Begin()
+	if err != nil {
+		fmt.Printf("Error starting transaction: %v\n", err)
+		return
+	}
+	defer tx.Rollback() // Safety rollback if something fails
+
 	var colNames []string
 	var placeholders []string
 	var args []interface{}
 
+	// Add normal columns
 	for col, val := range cols {
 		colNames = append(colNames, col)
 		placeholders = append(placeholders, fmt.Sprintf("@p%d", len(args)+1))
 		args = append(args, val)
 	}
 
-	// In insertRow function
-	_, _ = l.DB.Exec(fmt.Sprintf("SET IDENTITY_INSERT %s ON", l.Config.SQLTable))
+	// 2. FIX: Explicitly add the ID column
+	colNames = append(colNames, l.Config.IDStrategy.SQLField)
+	placeholders = append(placeholders, fmt.Sprintf("@p%d", len(args)+1))
+	args = append(args, idVal)
 
+	// 3. Enable Identity Insert INSIDE the transaction
+	_, err = tx.Exec(fmt.Sprintf("SET IDENTITY_INSERT %s ON", l.Config.SQLTable))
+	if err != nil {
+		fmt.Printf("Error enabling identity insert: %v\n", err)
+		return
+	}
+
+	// 4. Perform Insert
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
 		l.Config.SQLTable, strings.Join(colNames, ", "), strings.Join(placeholders, ", "))
 
-	if _, err := l.DB.Exec(query, args...); err != nil {
-		fmt.Printf("Error inserting: %v\n", err)
+	if _, err := tx.Exec(query, args...); err != nil {
+		fmt.Printf("Error inserting row: %v\n", err)
+		return
 	}
 
-	// ... Perform Insert including the ID column explicitly ...
-	_, _ = l.DB.Exec(fmt.Sprintf("SET IDENTITY_INSERT %s OFF", l.Config.SQLTable))
+	// 5. Disable Identity Insert
+	_, _ = tx.Exec(fmt.Sprintf("SET IDENTITY_INSERT %s OFF", l.Config.SQLTable))
+
+	// 6. Commit the transaction
+	if err := tx.Commit(); err != nil {
+		fmt.Printf("Error committing transaction: %v\n", err)
+	}
 }
 
 func (l *SQLLoader) updateRow(cols map[string]interface{}, idVal interface{}) {
@@ -269,4 +297,90 @@ func getIntOffset(o interface{}) int {
 	default:
 		return 0
 	}
+}
+
+func (l *SQLLoader) syncRelations(doc map[string]interface{}, parentID interface{}) error {
+	for _, relConfig := range l.Config.Relations {
+		rawData, ok := doc[relConfig.MongoField]
+		if !ok || rawData == nil {
+			continue
+		}
+
+		var items []map[string]interface{}
+
+		// Helper to convert Mongo types to []map
+		extractItems := func(slice []interface{}) {
+			for _, item := range slice {
+				if m, ok := item.(map[string]interface{}); ok {
+					items = append(items, m)
+				} else if m, ok := item.(primitive.M); ok {
+					items = append(items, map[string]interface{}(m))
+				} else if d, ok := item.(primitive.D); ok {
+					items = append(items, d.Map())
+				}
+			}
+		}
+
+		// Handle primitive.A or []interface{}
+		switch v := rawData.(type) {
+		case primitive.A:
+			extractItems([]interface{}(v))
+		case []interface{}:
+			extractItems(v)
+		}
+
+		// Handle Many-to-Many
+		if relConfig.Type == "many-to-many" {
+			l.DB.Exec(fmt.Sprintf("DELETE FROM %s WHERE %s = @p1", relConfig.SQLJoinTable, relConfig.SQLForeignKey), parentID)
+
+			for _, item := range items {
+				var roleID int64
+				nameVal := item["name"]
+				err := l.DB.QueryRow("SELECT id FROM roles WHERE name = @p1", nameVal).Scan(&roleID)
+				if err == nil {
+					l.DB.Exec(fmt.Sprintf("INSERT INTO %s (%s, role_id) VALUES (@p1, @p2)", relConfig.SQLJoinTable, relConfig.SQLForeignKey), parentID, roleID)
+				}
+			}
+		}
+
+		// Handle One-to-Many
+		if relConfig.Type == "one-to-many" {
+			l.DB.Exec(fmt.Sprintf("DELETE FROM %s WHERE %s = @p1", relConfig.SQLTable, relConfig.SQLForeignKey), parentID)
+
+			for _, item := range items {
+				var cols []string
+				var vals []interface{}
+				var placeholders []string
+
+				// 1. Manually add the Foreign Key (parent_id)
+				cols = append(cols, relConfig.SQLForeignKey)
+				vals = append(vals, parentID)
+				placeholders = append(placeholders, fmt.Sprintf("@p%d", len(vals)))
+
+				// 2. Add other fields
+				for k, v := range item {
+					// FIX: Skip ID AND the Foreign Key (because we added it above)
+					if k == "_id" || k == "id" || k == relConfig.SQLForeignKey {
+						continue
+					}
+
+					if t, ok := v.(primitive.DateTime); ok {
+						v = t.Time()
+					}
+
+					cols = append(cols, k)
+					vals = append(vals, v)
+					placeholders = append(placeholders, fmt.Sprintf("@p%d", len(vals)))
+				}
+
+				query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
+					relConfig.SQLTable, strings.Join(cols, ", "), strings.Join(placeholders, ", "))
+
+				if _, err := l.DB.Exec(query, vals...); err != nil {
+					fmt.Printf("Warning: Failed to insert child record: %v\n", err)
+				}
+			}
+		}
+	}
+	return nil
 }
