@@ -19,7 +19,7 @@ func (s *SQLToMongoExtractor) Extract(batchSize int, offset interface{}) ([]map[
 	// 1. Fetch main entities
 	query := fmt.Sprintf("SELECT * FROM %s ORDER BY %s OFFSET %v ROWS FETCH NEXT %d ROWS ONLY",
 		s.Config.SQLTable, s.Config.IDStrategy.SQLField, getIntOffset(offset), batchSize)
-	
+
 	rows, err := s.DB.Query(query)
 	if err != nil {
 		return nil, nil, err
@@ -51,7 +51,7 @@ func (s *SQLToMongoExtractor) Extract(batchSize int, offset interface{}) ([]map[
 			}
 		}
 		results = append(results, m)
-		
+
 		idVal := m[s.Config.IDStrategy.SQLField]
 		ids = append(ids, idVal)
 	}
@@ -73,7 +73,9 @@ func (s *SQLToMongoExtractor) Extract(batchSize int, offset interface{}) ([]map[
 }
 
 func (s *SQLToMongoExtractor) enrichRelations(users []map[string]interface{}, ids []interface{}) error {
-	if len(ids) == 0 { return nil }
+	if len(ids) == 0 {
+		return nil
+	}
 	inClause := strings.Trim(strings.Join(strings.Fields(fmt.Sprint(ids)), ","), "[]")
 
 	for key, rel := range s.Config.Relations {
@@ -101,17 +103,21 @@ func (s *SQLToMongoExtractor) enrichRelations(users []map[string]interface{}, id
 		for relRows.Next() {
 			vals := make([]interface{}, len(relCols))
 			ptrs := make([]interface{}, len(relCols))
-			for i := range vals { ptrs[i] = &vals[i] }
+			for i := range vals {
+				ptrs[i] = &vals[i]
+			}
 			relRows.Scan(ptrs...)
-			
+
 			rowMap := make(map[string]interface{})
 			var parentID string
 			for i, col := range relCols {
 				val := vals[i]
 				b, ok := val.([]byte)
 				v := val
-				if ok { v = string(b) }
-				
+				if ok {
+					v = string(b)
+				}
+
 				if col == "parent_id" {
 					parentID = fmt.Sprintf("%v", v)
 				} else {
@@ -210,26 +216,24 @@ func (l *SQLLoader) insertRow(cols map[string]interface{}, idVal interface{}) {
 	var placeholders []string
 	var args []interface{}
 
-	// Add Identity Insert logic if needed, but usually we let DB handle ID or force it if Identity Insert is ON.
-	// For simplicity, we assume we insert other fields and let DB generate ID or update existing.
-	// NOTE: If we want to restore the EXACT ID from Mongo, we need IDENTITY_INSERT ON.
-	// Here we try to update existing rows mainly.
-	
-	// Add PK to cols if we want to force it (requires SET IDENTITY_INSERT ON in MSSQL)
-	// For this demo, let's focus on updating the existing 'john_doe'.
-	
 	for col, val := range cols {
 		colNames = append(colNames, col)
 		placeholders = append(placeholders, fmt.Sprintf("@p%d", len(args)+1))
 		args = append(args, val)
 	}
 
-	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", 
+	// In insertRow function
+	_, _ = l.DB.Exec(fmt.Sprintf("SET IDENTITY_INSERT %s ON", l.Config.SQLTable))
+
+	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
 		l.Config.SQLTable, strings.Join(colNames, ", "), strings.Join(placeholders, ", "))
 
 	if _, err := l.DB.Exec(query, args...); err != nil {
 		fmt.Printf("Error inserting: %v\n", err)
 	}
+
+	// ... Perform Insert including the ID column explicitly ...
+	_, _ = l.DB.Exec(fmt.Sprintf("SET IDENTITY_INSERT %s OFF", l.Config.SQLTable))
 }
 
 func (l *SQLLoader) updateRow(cols map[string]interface{}, idVal interface{}) {
@@ -254,10 +258,15 @@ func (l *SQLLoader) updateRow(cols map[string]interface{}, idVal interface{}) {
 }
 
 func getIntOffset(o interface{}) int {
-	if o == nil { return 0 }
+	if o == nil {
+		return 0
+	}
 	switch v := o.(type) {
-	case int: return v
-	case float64: return int(v)
-	default: return 0
+	case int:
+		return v
+	case float64:
+		return int(v)
+	default:
+		return 0
 	}
 }
