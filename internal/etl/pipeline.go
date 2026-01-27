@@ -6,7 +6,6 @@ import (
 	"os"
 )
 
-// Pipeline manages the ETL process.
 type Pipeline struct {
 	Extractor Extractor
 	Loader    Loader
@@ -28,7 +27,6 @@ func (p *Pipeline) Run() error {
 
 	offset := startOffset
 	for {
-		// 1. Extract
 		data, newOffset, err := p.Extractor.Extract(p.BatchSize, offset)
 		if err != nil {
 			return fmt.Errorf("extraction failed: %w", err)
@@ -38,18 +36,15 @@ func (p *Pipeline) Run() error {
 			break
 		}
 
-		// 2. Load (Transformation happens inside Adapter for simplicity in this dynamic schema)
 		if err := p.Loader.Load(data); err != nil {
 			return fmt.Errorf("loading failed at offset %v: %w", offset, err)
 		}
 
-		// 3. Checkpoint
 		offset = newOffset
 		saveCheckpoint(checkpointFile, offset)
 		log.Printf("Processed batch. New offset: %v", offset)
 	}
-	
-	// Cleanup
+
 	os.Remove(checkpointFile)
 	return nil
 }
@@ -57,7 +52,7 @@ func (p *Pipeline) Run() error {
 func loadCheckpoint(filename string) interface{} {
 	data, err := os.ReadFile(filename)
 	if err != nil {
-		return nil // No checkpoint implies start from beginning
+		return nil
 	}
 	return string(data)
 }

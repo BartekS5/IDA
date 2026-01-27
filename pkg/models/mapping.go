@@ -2,14 +2,13 @@ package models
 
 import "encoding/json"
 
-// MappingSchema represents the root of the JSON mapping file.
 type MappingSchema struct {
-	Entity          string                     `json:"entity"`
-	SQLTable        string                     `json:"sqlTable"`
-	MongoCollection string                     `json:"mongoCollection"`
-	IDStrategy      IDStrategy                 `json:"idStrategy"`
-	Fields          map[string]FieldConfig     `json:"fields"`
-	Relations       map[string]RelationConfig  `json:"relations"`
+	Entity          string                    `json:"entity"`
+	SQLTable        string                    `json:"sqlTable"`
+	MongoCollection string                    `json:"mongoCollection"`
+	IDStrategy      IDStrategy                `json:"idStrategy"`
+	Fields          map[string]FieldConfig    `json:"fields"`
+	Relations       map[string]RelationConfig `json:"relations"`
 }
 
 type IDStrategy struct {
@@ -28,7 +27,7 @@ type FieldConfig struct {
 type RelationConfig struct {
 	Type          string   `json:"type"`
 	SQLTable      string   `json:"sqlTable,omitempty"`
-	SQLJoinTable  string   `json:"sqlJoinTable,omitempty"` // Fixed: Added 'string' type
+	SQLJoinTable  string   `json:"sqlJoinTable,omitempty"`
 	SQLForeignKey string   `json:"sqlForeignKey"`
 	MongoField    string   `json:"mongoField"`
 	Embedding     string   `json:"embedding"`

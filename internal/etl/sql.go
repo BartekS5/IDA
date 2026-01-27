@@ -10,14 +10,12 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-// SQLToMongoExtractor reads from SQL and builds hierarchical structures.
 type SQLToMongoExtractor struct {
 	DB     *sql.DB
 	Config *models.MappingSchema
 }
 
 func (s *SQLToMongoExtractor) Extract(batchSize int, offset interface{}) ([]map[string]interface{}, interface{}, error) {
-	// 1. Fetch main entities
 	query := fmt.Sprintf("SELECT * FROM %s ORDER BY %s OFFSET %v ROWS FETCH NEXT %d ROWS ONLY",
 		s.Config.SQLTable, s.Config.IDStrategy.SQLField, getIntOffset(offset), batchSize)
 
@@ -61,12 +59,10 @@ func (s *SQLToMongoExtractor) Extract(batchSize int, offset interface{}) ([]map[
 		return results, offset, nil
 	}
 
-	// 2. Fetch Relations
 	if err := s.enrichRelations(results, ids); err != nil {
 		return nil, nil, err
 	}
 
-	// 3. Transform
 	transformed := s.transformToMongoSchema(results)
 
 	nextOffset := getIntOffset(offset) + len(results)
@@ -167,7 +163,6 @@ func (s *SQLToMongoExtractor) transformToMongoSchema(raw []map[string]interface{
 	return out
 }
 
-// SQLLoader inserts/updates data into SQL.
 type SQLLoader struct {
 	DB     *sql.DB
 	Config *models.MappingSchema
@@ -186,7 +181,6 @@ func (l *SQLLoader) Load(data []map[string]interface{}) error {
 		colValues := make(map[string]interface{})
 		for _, f := range l.Config.Fields {
 			if val, exists := doc[f.MongoField]; exists {
-				// FIX: Convert Mongo Date (primitive.DateTime) to Go Time
 				if f.Type == "datetime" {
 					if t, ok := val.(primitive.DateTime); ok {
 						val = t.Time()
@@ -196,7 +190,6 @@ func (l *SQLLoader) Load(data []map[string]interface{}) error {
 			}
 		}
 
-		// 3. Check if Row Exists
 		var exists int
 		checkQuery := fmt.Sprintf("SELECT 1 FROM %s WHERE %s = @p1", l.Config.SQLTable, l.Config.IDStrategy.SQLField)
 		err := l.DB.QueryRow(checkQuery, idVal).Scan(&exists)
@@ -215,38 +208,32 @@ func (l *SQLLoader) Load(data []map[string]interface{}) error {
 }
 
 func (l *SQLLoader) insertRow(cols map[string]interface{}, idVal interface{}) {
-	// 1. Start a Transaction (Ensures ON/INSERT/OFF happen on the same connection)
 	tx, err := l.DB.Begin()
 	if err != nil {
 		fmt.Printf("Error starting transaction: %v\n", err)
 		return
 	}
-	defer tx.Rollback() // Safety rollback if something fails
+	defer tx.Rollback()
 
 	var colNames []string
 	var placeholders []string
 	var args []interface{}
-
-	// Add normal columns
 	for col, val := range cols {
 		colNames = append(colNames, col)
 		placeholders = append(placeholders, fmt.Sprintf("@p%d", len(args)+1))
 		args = append(args, val)
 	}
 
-	// 2. FIX: Explicitly add the ID column
 	colNames = append(colNames, l.Config.IDStrategy.SQLField)
 	placeholders = append(placeholders, fmt.Sprintf("@p%d", len(args)+1))
 	args = append(args, idVal)
 
-	// 3. Enable Identity Insert INSIDE the transaction
 	_, err = tx.Exec(fmt.Sprintf("SET IDENTITY_INSERT %s ON", l.Config.SQLTable))
 	if err != nil {
 		fmt.Printf("Error enabling identity insert: %v\n", err)
 		return
 	}
 
-	// 4. Perform Insert
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
 		l.Config.SQLTable, strings.Join(colNames, ", "), strings.Join(placeholders, ", "))
 
@@ -255,10 +242,7 @@ func (l *SQLLoader) insertRow(cols map[string]interface{}, idVal interface{}) {
 		return
 	}
 
-	// 5. Disable Identity Insert
 	_, _ = tx.Exec(fmt.Sprintf("SET IDENTITY_INSERT %s OFF", l.Config.SQLTable))
-
-	// 6. Commit the transaction
 	if err := tx.Commit(); err != nil {
 		fmt.Printf("Error committing transaction: %v\n", err)
 	}
@@ -273,7 +257,6 @@ func (l *SQLLoader) updateRow(cols map[string]interface{}, idVal interface{}) {
 		args = append(args, val)
 	}
 
-	// Add ID as the last argument for WHERE clause
 	args = append(args, idVal)
 	query := fmt.Sprintf("UPDATE %s SET %s WHERE %s = @p%d",
 		l.Config.SQLTable, strings.Join(setClauses, ", "), l.Config.IDStrategy.SQLField, len(args))
@@ -308,7 +291,6 @@ func (l *SQLLoader) syncRelations(doc map[string]interface{}, parentID interface
 
 		var items []map[string]interface{}
 
-		// Helper to convert Mongo types to []map
 		extractItems := func(slice []interface{}) {
 			for _, item := range slice {
 				if m, ok := item.(map[string]interface{}); ok {
@@ -321,7 +303,6 @@ func (l *SQLLoader) syncRelations(doc map[string]interface{}, parentID interface
 			}
 		}
 
-		// Handle primitive.A or []interface{}
 		switch v := rawData.(type) {
 		case primitive.A:
 			extractItems([]interface{}(v))
@@ -329,7 +310,6 @@ func (l *SQLLoader) syncRelations(doc map[string]interface{}, parentID interface
 			extractItems(v)
 		}
 
-		// Handle Many-to-Many
 		if relConfig.Type == "many-to-many" {
 			l.DB.Exec(fmt.Sprintf("DELETE FROM %s WHERE %s = @p1", relConfig.SQLJoinTable, relConfig.SQLForeignKey), parentID)
 
@@ -343,7 +323,6 @@ func (l *SQLLoader) syncRelations(doc map[string]interface{}, parentID interface
 			}
 		}
 
-		// Handle One-to-Many
 		if relConfig.Type == "one-to-many" {
 			l.DB.Exec(fmt.Sprintf("DELETE FROM %s WHERE %s = @p1", relConfig.SQLTable, relConfig.SQLForeignKey), parentID)
 
@@ -352,14 +331,11 @@ func (l *SQLLoader) syncRelations(doc map[string]interface{}, parentID interface
 				var vals []interface{}
 				var placeholders []string
 
-				// 1. Manually add the Foreign Key (parent_id)
 				cols = append(cols, relConfig.SQLForeignKey)
 				vals = append(vals, parentID)
 				placeholders = append(placeholders, fmt.Sprintf("@p%d", len(vals)))
 
-				// 2. Add other fields
 				for k, v := range item {
-					// FIX: Skip ID AND the Foreign Key (because we added it above)
 					if k == "_id" || k == "id" || k == relConfig.SQLForeignKey {
 						continue
 					}

@@ -11,13 +11,11 @@ import (
 )
 
 func runMigration(opts *MigrateOptions, direction string) error {
-	// 1. Load Config
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		return err
 	}
 
-	// 2. Load Mapping
 	mappingData, err := os.ReadFile(opts.MappingFile)
 	if err != nil {
 		return fmt.Errorf("failed to read mapping file: %w", err)
@@ -27,7 +25,6 @@ func runMigration(opts *MigrateOptions, direction string) error {
 		return fmt.Errorf("failed to parse mapping JSON: %w", err)
 	}
 
-	// 3. Connect DBs
 	sqlDB, err := database.ConnectSQL(cfg.SQLConnString)
 	if err != nil {
 		return err
@@ -39,10 +36,8 @@ func runMigration(opts *MigrateOptions, direction string) error {
 		return err
 	}
 	defer func() {
-		// handle disconnect
 	}()
 
-	// 4. Setup Pipeline
 	var extractor etl.Extractor
 	var loader etl.Loader
 
@@ -55,12 +50,12 @@ func runMigration(opts *MigrateOptions, direction string) error {
 	}
 
 	pipeline := etl.NewPipeline(extractor, loader, opts.BatchSize)
-	
+
 	fmt.Printf("Starting %s migration for entity %s...\n", direction, mappingSchema.Entity)
 	if err := pipeline.Run(); err != nil {
 		return err
 	}
-	
+
 	fmt.Println("Migration finished successfully.")
 	return nil
 }

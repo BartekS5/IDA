@@ -1,5 +1,3 @@
-// Package config handles loading and parsing of configuration files
-// for the application.
 package config
 
 import (
@@ -7,14 +5,11 @@ import (
 	"os"
 )
 
-// Config holds database connection configuration loaded from environment variables.
 type Config struct {
 	SQLConnString   string
 	MongoConnString string
 }
 
-// LoadConfig loads application settings from environment variables
-// (which should be populated by the .env file in main.go).
 func LoadConfig() (*Config, error) {
 	sqlConn := os.Getenv("SQL_CONNECTION_STRING")
 	if sqlConn == "" {
